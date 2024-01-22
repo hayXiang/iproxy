@@ -4,12 +4,33 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
 	"strings"
 	"time"
 )
+
+var lOG_LEVEL = 3 //0: no log, 1: error, 2: info, 3: debug
+
+func LOG_DEBUG(out string) {
+	if lOG_LEVEL >= 3 {
+		log.Printf("[DEBUG]%s", out)
+	}
+}
+
+func LOG_INFO(out string) {
+	if lOG_LEVEL >= 2 {
+		log.Printf("[INFO]%s", out)
+	}
+}
+
+func LOG_ERROR(out string) {
+	if lOG_LEVEL >= 1 {
+		log.Printf("[ERROR]%s", out)
+	}
+}
 
 var transport = http.Transport{
 	TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
@@ -21,9 +42,9 @@ var transport = http.Transport{
 type HttpRequestCallback func(*http.Request, *http.Client)
 
 func HttpGet(url string) (*http.Response, error) {
-	fmt.Println("begin to HttpGet " + url)
+	LOG_INFO("begin to HttpGet " + url)
 	defer func() {
-		fmt.Println("end to HttpGet " + url)
+		LOG_INFO("end to HttpGet " + url)
 	}()
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -45,7 +66,7 @@ func HttpGet(url string) (*http.Response, error) {
 }
 
 func proxy(w http.ResponseWriter, req *http.Request) {
-	fmt.Println(req.RequestURI)
+	LOG_INFO("[S]" + req.RequestURI)
 	if !strings.Contains(req.RequestURI, ("/http:/")) && !strings.Contains(req.RequestURI, ("/https:/")) {
 		w.WriteHeader(500)
 		w.Write([]byte("must be start witch /http:/ or /https"))
@@ -69,6 +90,7 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
 	}
+	LOG_INFO("[E]" + req.RequestURI)
 }
 func main() {
 	listen_address := ":8080"
