@@ -50,7 +50,7 @@ func HttpGet(url string) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-
+	req.Header.Add("User-Agent", "Dalvik/2.1.0 (Linux; U; Android 9; PCRT00 Build/PQ3A.190605.01111538)")
 	client := http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -93,7 +93,7 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 	LOG_INFO("[E]" + req.RequestURI)
 }
 func main() {
-	listen_address := ":8080"
+	listen_address := ":80"
 	if len(os.Args) > 1 {
 		listen_address = os.Args[1]
 	}
