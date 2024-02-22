@@ -2,12 +2,12 @@ package main
 
 import (
 	"crypto/tls"
+	"flag"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 )
@@ -65,6 +65,8 @@ func HttpGet(url string) (*http.Response, error) {
 	return res, err
 }
 
+var is_m3u_porxy = false
+
 func proxy(w http.ResponseWriter, req *http.Request) {
 	LOG_INFO("[S]" + req.RequestURI)
 	if !strings.Contains(req.RequestURI, ("/http:/")) && !strings.Contains(req.RequestURI, ("/https:/")) {
@@ -88,16 +90,24 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 			w.Header().Set("Location", location)
 		}
 		w.WriteHeader(resp.StatusCode)
-		io.Copy(w, resp.Body)
+		contentType := resp.Header.Get("Content-Type")
+		if is_m3u_porxy && contentType == "application/vnd.apple.mpegurl" {
+			m3u8_body, _ := io.ReadAll(resp.Body)
+			body := strings.ReplaceAll(string(m3u8_body), "https://", "/https:/")
+			io.Copy(w, strings.NewReader(body))
+		} else {
+			io.Copy(w, resp.Body)
+		}
 	}
 	LOG_INFO("[E]" + req.RequestURI)
 }
+
 func main() {
-	listen_address := ":80"
-	if len(os.Args) > 1 {
-		listen_address = os.Args[1]
-	}
+	listen_address := flag.String("l", ":8080", "listen address")
+	flag.BoolVar(&is_m3u_porxy, "m3u8_proxy", true, "replace m3u8 ts file")
+	flag.Parse()
 	http.HandleFunc("/", proxy)
-	fmt.Println("server listen :" + listen_address)
-	http.ListenAndServe(listen_address, nil)
+	fmt.Println("server listen :" + *listen_address)
+	http.ListenAndServe(*listen_address, nil)
+	fmt.Println("iproxy exit!")
 }
