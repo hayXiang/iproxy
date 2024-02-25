@@ -148,35 +148,31 @@ func main() {
 	flag.Parse()
 
 	data, err := ioutil.ReadFile(*http_config_file)
-	if err != nil {
-		panic("无法读取文件")
-	}
-
-	// 将 []byte 类型的数据转换成 string 类型
-	str_http_config := string(data)
-
-	if str_http_config != "" {
-		var config interface{}
-		json.Unmarshal([]byte(str_http_config), &config)
-		datas := config.([]interface{})
-		for _, data := range datas {
-			var http_config HttpConfig
-			http_config.follow_redirect = false
-			http_config.headers = make(map[string]string)
-			for k, v := range data.(map[string]interface{}) {
-				if k == "headers" {
-					for header_key, header_value := range v.(map[string]interface{}) {
-						http_config.headers[header_key] = header_value.(string)
+	if err == nil {
+		str_http_config := string(data)
+		if str_http_config != "" {
+			var config interface{}
+			json.Unmarshal([]byte(str_http_config), &config)
+			datas := config.([]interface{})
+			for _, data := range datas {
+				var http_config HttpConfig
+				http_config.follow_redirect = false
+				http_config.headers = make(map[string]string)
+				for k, v := range data.(map[string]interface{}) {
+					if k == "headers" {
+						for header_key, header_value := range v.(map[string]interface{}) {
+							http_config.headers[header_key] = header_value.(string)
+						}
+					}
+					if k == "url" {
+						http_config.url = v.(string)
+					}
+					if k == "follow_redirect" && v.(bool) {
+						http_config.follow_redirect = true
 					}
 				}
-				if k == "url" {
-					http_config.url = v.(string)
-				}
-				if k == "follow_redirect" && v.(bool) {
-					http_config.follow_redirect = true
-				}
+				http_configs[http_path(http_config.url)] = http_config
 			}
-			http_configs[http_path(http_config.url)] = http_config
 		}
 	}
 
