@@ -2,9 +2,11 @@ package main
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -41,7 +43,7 @@ var transport = http.Transport{
 
 type HttpRequestCallback func(*http.Request, *http.Client)
 
-func HttpGet(url string) (*http.Response, error) {
+func HttpGet(url string, config *HttpConfig) (*http.Response, error) {
 	LOG_INFO("begin to HttpGet " + url)
 	defer func() {
 		LOG_INFO("end to HttpGet " + url)
@@ -50,22 +52,56 @@ func HttpGet(url string) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Add("User-Agent", "Dalvik/2.1.0 (Linux; U; Android 9; PCRT00 Build/PQ3A.190605.01111538)")
-	client := http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-		Transport: &transport,
+	if len(config.headers) == 0 {
+		req.Header.Add("User-Agent", "Dalvik/2.1.0 (Linux; U; Android 9; PCRT00 Build/PQ3A.190605.01111538)")
+	} else {
+		for key, value := range config.headers {
+			req.Header.Add(key, value)
+		}
 	}
 
-	res, err := client.Do(req)
-	if err != nil {
+	if !config.follow_redirect {
+		client := http.Client{
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+			Transport: &transport,
+		}
+		res, err := client.Do(req)
+		if err != nil {
+			return res, err
+		}
+		return res, err
+	} else {
+		client := http.Client{
+			Transport: &transport,
+		}
+		res, err := client.Do(req)
+		if err != nil {
+			return res, err
+		}
 		return res, err
 	}
-	return res, err
+}
+
+type HttpConfig struct {
+	headers         map[string]string
+	url             string
+	follow_redirect bool
 }
 
 var is_m3u_porxy = false
+var http_configs = make(map[string]HttpConfig)
+
+func http_path(url string) string {
+	path := strings.Replace(url, "http://", "", 1)
+	path = strings.Replace(path, "https://", "", 1)
+	index := strings.Index(path, "?")
+	if index != -1 {
+		path = path[:index]
+	}
+	return path
+}
 
 func proxy(w http.ResponseWriter, req *http.Request) {
 	LOG_INFO("[S]" + req.RequestURI)
@@ -76,7 +112,9 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 		url := req.RequestURI[1:]
 		url = strings.Replace(url, "http:/", "http://", 1)
 		url = strings.Replace(url, "https:/", "https://", 1)
-		resp, err := HttpGet(url)
+
+		config := http_configs[http_path(url)]
+		resp, err := HttpGet(url, &config)
 		if err != nil {
 			w.WriteHeader(500)
 			w.Write([]byte(err.Error()))
@@ -105,7 +143,43 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 func main() {
 	listen_address := flag.String("l", ":8080", "listen address")
 	flag.BoolVar(&is_m3u_porxy, "m3u8_proxy", true, "replace m3u8 ts file")
+	http_config_file := flag.String("h", "./http.json", "http config file")
+
 	flag.Parse()
+
+	data, err := ioutil.ReadFile(*http_config_file)
+	if err != nil {
+		panic("无法读取文件")
+	}
+
+	// 将 []byte 类型的数据转换成 string 类型
+	str_http_config := string(data)
+
+	if str_http_config != "" {
+		var config interface{}
+		json.Unmarshal([]byte(str_http_config), &config)
+		datas := config.([]interface{})
+		for _, data := range datas {
+			var http_config HttpConfig
+			http_config.follow_redirect = false
+			http_config.headers = make(map[string]string)
+			for k, v := range data.(map[string]interface{}) {
+				if k == "headers" {
+					for header_key, header_value := range v.(map[string]interface{}) {
+						http_config.headers[header_key] = header_value.(string)
+					}
+				}
+				if k == "url" {
+					http_config.url = v.(string)
+				}
+				if k == "follow_redirect" && v.(bool) {
+					http_config.follow_redirect = true
+				}
+			}
+			http_configs[http_path(http_config.url)] = http_config
+		}
+	}
+
 	http.HandleFunc("/", proxy)
 	fmt.Println("server listen :" + *listen_address)
 	http.ListenAndServe(*listen_address, nil)
