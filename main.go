@@ -114,8 +114,9 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 		url = strings.Replace(url, "https:/", "https://", 1)
 
 		config := http_configs[http_path(url)]
-		if strings.Contains(url, "#follow_redirect") {
-			url = strings.Replace(url, "#follow_redirect", "", 1)
+		if strings.Contains(url, "follow_redirect") {
+			url = strings.Replace(url, "?follow_redirect", "", 1)
+			url = strings.Replace(url, "&follow_redirect", "", 1)
 			config.follow_redirect = true
 		}
 		resp, err := HttpGet(url, &config)
