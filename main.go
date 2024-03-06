@@ -99,6 +99,7 @@ func HttpGet(url string, config *HttpConfig, time_out int) (*http.Response, erro
 type HttpConfig struct {
 	headers           map[string]string
 	url               string
+	url_replace       map[string]string
 	follow_redirect   bool
 	m3u8_proxy        bool
 	error_code_to_302 bool
@@ -192,7 +193,11 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 			time_out = -1
 		}
 
-		resp, err := HttpGet(rawUrl, config, time_out)
+		real_url := rawUrl
+		for _key, _value := range config.url_replace {
+			real_url = strings.Replace(real_url, _key, _value, 1)
+		}
+		resp, err := HttpGet(real_url, config, time_out)
 		defer func() {
 			if err == nil {
 				resp.Body.Close()
@@ -209,7 +214,7 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 
 			} else {
 				w.WriteHeader(500)
-				w.Write([]byte(err.Error()))
+				w.Write([]byte("error"))
 			}
 			return
 		}
@@ -303,10 +308,16 @@ func main() {
 				http_config.time_out = default_config.time_out
 				http_config.keep_alive = default_config.keep_alive
 				http_config.headers = make(map[string]string)
+				http_config.url_replace = make(map[string]string)
 				for k, v := range data.(map[string]interface{}) {
 					if k == "headers" {
 						for header_key, header_value := range v.(map[string]interface{}) {
 							http_config.headers[header_key] = header_value.(string)
+						}
+					}
+					if k == "url_replace" {
+						for _key, _value := range v.(map[string]interface{}) {
+							http_config.url_replace[_key] = _value.(string)
 						}
 					}
 					if k == "url" {
