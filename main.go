@@ -137,16 +137,14 @@ func get_http_config(uri string) *HttpConfig {
 }
 
 func dec_session_count(config *HttpConfig, is_need_to_restore_session *bool) {
-	if *is_need_to_restore_session {
-		config.mutex.Lock()
-		config.max_session -= 1
-		config.mutex.Unlock()
-	}
+	config.mutex.Lock()
+	config.max_session -= 1
+	config.mutex.Unlock()
+	*is_need_to_restore_session = true
 }
 
 func inc_session_count(config *HttpConfig, is_need_to_restore_session *bool) {
 	if *is_need_to_restore_session {
-		time.Sleep(1 * time.Second)
 		config.mutex.Lock()
 		config.max_session += 1
 		config.mutex.Unlock()
@@ -173,13 +171,14 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 			config.follow_redirect = false
 		}
 
+		{
 		config.mutex.Lock()
 		if config.max_session == 0 {
 			location := "/" + req.RequestURI[1:]
 			err_msg := "session count is 0, redirect to " + location
 			config.mutex.Unlock()
 			LOG_ERROR(err_msg)
-			time.Sleep(1000 * time.Millisecond)
+			time.Sleep(500 * time.Millisecond)
 			w.Header().Set("Location", location)
 			w.WriteHeader(302)
 			return
@@ -226,7 +225,7 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 			w.Header().Set("Location", location)
 		} else if (resp.StatusCode < 200 || resp.StatusCode > 299) && config.error_code_to_302 {
 			m3u8_body, _ := io.ReadAll(resp.Body)
-			LOG_ERROR(string(m3u8_body))
+			LOG_ERROR(fmt.Sprintf("http_code:%d,status:%s,body:%s", resp.StatusCode, resp.Status, string(m3u8_body)))
 			location := "/" + req.RequestURI[1:]
 			LOG_ERROR("get " + location + " error, redirect to get it")
 			w.Header().Set("Location", location)
@@ -240,9 +239,6 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 		if strings.Contains(contentType, "mpegurl") {
 			m3u8_body, _ := io.ReadAll(resp.Body)
 			LOG_DEBUG(string(m3u8_body))
-			if config.max_session == 0 {
-				time.Sleep(1 * time.Second)
-			}
 			inc_session_count(config, &is_need_to_restore_session)
 			line := bufio.NewScanner(strings.NewReader(string(m3u8_body)))
 			lastRequestUrl := resp.Request.URL
@@ -307,6 +303,7 @@ func main() {
 				http_config.error_code_to_302 = default_config.error_code_to_302
 				http_config.time_out = default_config.time_out
 				http_config.keep_alive = default_config.keep_alive
+				http_config.max_session = default_config.max_session
 				http_config.headers = make(map[string]string)
 				http_config.url_replace = make(map[string]string)
 				for k, v := range data.(map[string]interface{}) {
