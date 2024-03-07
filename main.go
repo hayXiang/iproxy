@@ -171,14 +171,13 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 			config.follow_redirect = false
 		}
 
-		{
 		config.mutex.Lock()
 		if config.max_session == 0 {
 			location := "/" + req.RequestURI[1:]
 			err_msg := "session count is 0, redirect to " + location
 			config.mutex.Unlock()
 			LOG_ERROR(err_msg)
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(1000 * time.Millisecond)
 			w.Header().Set("Location", location)
 			w.WriteHeader(302)
 			return
