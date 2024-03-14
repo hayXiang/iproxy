@@ -219,8 +219,6 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 
 		if resp.StatusCode == 301 || resp.StatusCode == 302 {
 			location := resp.Header.Get("Location")
-			location = strings.Replace(location, "http://", "/http:/", 1)
-			location = strings.Replace(location, "https://", "/https:/", 1)
 			w.Header().Set("Location", location)
 		} else if (resp.StatusCode < 200 || resp.StatusCode > 299) && config.error_code_to_302 {
 			m3u8_body, _ := io.ReadAll(resp.Body)
