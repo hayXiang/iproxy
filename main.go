@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -96,17 +97,30 @@ func HttpGet(url string, config *HttpConfig, time_out int) (*http.Response, erro
 
 }
 
+type HttpResponseCache struct {
+	expried_time int
+	create_time  time.Time
+	body         []byte
+	content_type string
+	last_url     string
+	mutex        sync.Mutex
+}
+
 type HttpConfig struct {
-	headers           map[string]string
-	url               string
-	url_replace       map[string]string
-	follow_redirect   bool
-	m3u8_proxy        bool
-	error_code_to_302 bool
-	time_out          int
-	max_session       int
-	keep_alive        bool
-	mutex             sync.Mutex
+	request_validator     map[string]string
+	headers               map[string]string
+	url                   string
+	url_replace           map[string]string
+	response_body_replace map[string]string
+	response_cache        *HttpResponseCache
+	debug_response        bool
+	follow_redirect       bool
+	m3u8_proxy            bool
+	error_code_to_302     bool
+	time_out              int
+	max_session           int
+	keep_alive            bool
+	mutex                 sync.Mutex
 }
 
 var http_configs = make(map[string]*HttpConfig)
@@ -152,119 +166,219 @@ func inc_session_count(config *HttpConfig, is_need_to_restore_session *bool) {
 	}
 }
 
+func http_resposne_copy(config *HttpConfig, content_type string, is_need_to_restore_session *bool, w *http.ResponseWriter, resp *http.Response, request_uri *url.URL, rawUrl *string) {
+	if strings.Contains(content_type, "mpegurl") {
+		m3u8_body := ""
+		str_last_request_url := ""
+		if config.response_cache != nil && config.response_cache.body != nil {
+			m3u8_body = string(config.response_cache.body)
+			str_last_request_url = config.response_cache.last_url
+		} else {
+			bytes_m3u8_body, _ := io.ReadAll(resp.Body)
+			inc_session_count(config, is_need_to_restore_session)
+			str_last_request_url = resp.Request.URL.String()
+			if config.response_cache != nil && config.response_cache.expried_time != 0 {
+				config.response_cache.content_type = content_type
+				config.response_cache.mutex.Lock()
+				config.response_cache.create_time = time.Now()
+				config.response_cache.body = bytes_m3u8_body
+				config.response_cache.last_url = str_last_request_url
+				config.response_cache.mutex.Unlock()
+			}
+			m3u8_body = string(bytes_m3u8_body)
+		}
+		if config.debug_response {
+			LOG_DEBUG(m3u8_body)
+		}
+		for _key, _value := range config.response_body_replace {
+			re := regexp.MustCompile(_key)
+			m3u8_body = re.ReplaceAllString(m3u8_body, _value)
+		}
+		line := bufio.NewScanner(strings.NewReader(m3u8_body))
+		lastRequestUrl, _ := url.Parse(str_last_request_url)
+		for line.Scan() {
+			ext_info := line.Text()
+			if strings.Contains(ext_info, ".ts") {
+				if strings.Index(ext_info, "/") == 0 {
+					ext_info = lastRequestUrl.Scheme + "://" + lastRequestUrl.Host + ext_info
+				} else if strings.Index(ext_info, "http://") != 0 && strings.Index(ext_info, "https://") != 0 && lastRequestUrl.String() != *rawUrl {
+					lastRequstRawUrl := lastRequestUrl.String()
+					ext_info = lastRequstRawUrl[0:strings.LastIndex(lastRequstRawUrl, "/")] + "/" + ext_info
+				}
+
+				if config.m3u8_proxy {
+					ext_info = strings.ReplaceAll(ext_info, "http://", "/http:/")
+					ext_info = strings.ReplaceAll(ext_info, "https://", "/https:/")
+				}
+			}
+			io.Copy(*w, strings.NewReader(ext_info+"\n"))
+		}
+	} else {
+		if config.response_cache == nil {
+			io.Copy(*w, resp.Body)
+		} else {
+			m3u8_body := ""
+			if config.response_cache.body != nil {
+				m3u8_body = string(config.response_cache.body)
+			} else {
+				bytes_m3u8_body, _ := io.ReadAll(resp.Body)
+				inc_session_count(config, is_need_to_restore_session)
+				if config.response_cache != nil && config.response_cache.expried_time != 0 {
+					config.response_cache.content_type = content_type
+					config.response_cache.mutex.Lock()
+					config.response_cache.create_time = time.Now()
+					config.response_cache.body = bytes_m3u8_body
+					config.response_cache.last_url = *rawUrl
+					config.response_cache.mutex.Unlock()
+				}
+				m3u8_body = string(bytes_m3u8_body)
+			}
+			if config.debug_response {
+				LOG_DEBUG(m3u8_body)
+			}
+			for _key, _value := range config.response_body_replace {
+				re := regexp.MustCompile(_key)
+				_value = strings.ReplaceAll(_value, "{raw_url_query[*]}", request_uri.RawQuery)
+				m3u8_body = re.ReplaceAllString(m3u8_body, _value)
+			}
+			io.Copy(*w, strings.NewReader(m3u8_body))
+		}
+	}
+}
+
 func proxy(w http.ResponseWriter, req *http.Request) {
 	LOG_INFO("[S]" + req.RequestURI)
-	if !strings.Contains(req.RequestURI, ("/http:/")) && !strings.Contains(req.RequestURI, ("/https:/")) {
-		err_msg := "must be start witch /http:/ or /https"
+	defer LOG_INFO("[E]" + req.RequestURI)
+	request_uri, _ := url.Parse(req.RequestURI)
+
+	rawUrl := req.RequestURI[1:]
+	rawUrl = strings.Replace(rawUrl, "http:/", "http://", 1)
+	rawUrl = strings.Replace(rawUrl, "https:/", "https://", 1)
+
+	config := get_http_config(rawUrl)
+	if strings.Contains(rawUrl, "follow_redirect=false") {
+		rawUrl = strings.Replace(rawUrl, "?follow_redirect", "", 1)
+		rawUrl = strings.Replace(rawUrl, "&follow_redirect", "", 1)
+		config.follow_redirect = false
+	}
+
+	for _key, _value := range config.request_validator {
+		infos := strings.Split(_key, ".")
+		if len(infos) != 2 {
+			panic("validator config error:")
+		}
+
+		if infos[0] == "header" {
+			re := regexp.MustCompile(_value)
+			http_value := strings.Join(req.Header[infos[1]], ",")
+			if !re.MatchString(http_value) {
+				error_msg := "http " + infos[0] + " error, key=" + _key
+				w.WriteHeader(500)
+				w.Write([]byte(error_msg))
+				LOG_ERROR(error_msg + ",value=" + http_value)
+				return
+			}
+		} else if infos[0] == "query" {
+			re := regexp.MustCompile(_value)
+			http_value := strings.Join(request_uri.Query()[infos[1]], ",")
+			if !re.MatchString(http_value) {
+				error_msg := "http " + infos[0] + " error, key=" + _key
+				w.WriteHeader(500)
+				w.Write([]byte(error_msg))
+				LOG_ERROR(error_msg + ",value=" + http_value)
+				return
+			}
+		}
+	}
+
+	if config.response_cache != nil && config.response_cache.expried_time != 0 {
+		if config.response_cache.body != nil {
+			if config.response_cache.create_time.Add(time.Duration(config.response_cache.expried_time * int(time.Second))).After(time.Now()) {
+				http_resposne_copy(config, config.response_cache.content_type, nil, &w, nil, request_uri, &rawUrl)
+				return
+			} else {
+				config.response_cache.body = nil
+			}
+		}
+	}
+
+	config.mutex.Lock()
+	if config.max_session == 0 {
+		location := "/" + req.RequestURI[1:]
+		err_msg := "session count is 0, redirect to " + location
+		config.mutex.Unlock()
+		LOG_ERROR(err_msg)
+		time.Sleep(1000 * time.Millisecond)
+		w.Header().Set("Location", location)
+		w.WriteHeader(302)
+		return
+	}
+	config.mutex.Unlock()
+
+	is_need_to_restore_session := false
+	dec_session_count(config, &is_need_to_restore_session)
+	time_out := config.time_out
+	if strings.Contains(rawUrl, "live_mode=ts") || strings.Contains(rawUrl, "live_mode=flv") {
+		time_out = -1
+	}
+
+	real_url := rawUrl
+	for _key, _value := range config.url_replace {
+		re := regexp.MustCompile(_key)
+		real_url = re.ReplaceAllString(real_url, _value)
+	}
+
+	if !strings.Contains(real_url, ("http://")) && !strings.Contains(req.RequestURI, ("https://")) {
+		err_msg := "invalid url:" + req.RequestURI[1:]
 		w.WriteHeader(500)
 		w.Write([]byte(err_msg))
-		LOG_ERROR(err_msg)
-	} else {
-		rawUrl := req.RequestURI[1:]
-		rawUrl = strings.Replace(rawUrl, "http:/", "http://", 1)
-		rawUrl = strings.Replace(rawUrl, "https:/", "https://", 1)
+		LOG_ERROR("invalid url:" + real_url + ", must be start http:// or https://")
+		inc_session_count(config, &is_need_to_restore_session)
+		return
+	}
 
-		config := get_http_config(rawUrl)
-		if strings.Contains(rawUrl, "follow_redirect=false") {
-			rawUrl = strings.Replace(rawUrl, "?follow_redirect", "", 1)
-			rawUrl = strings.Replace(rawUrl, "&follow_redirect", "", 1)
-			config.follow_redirect = false
+	resp, err := HttpGet(real_url, config, time_out)
+	defer func() {
+		if err == nil {
+			resp.Body.Close()
 		}
-
-		config.mutex.Lock()
-		if config.max_session == 0 {
-			location := "/" + req.RequestURI[1:]
-			err_msg := "session count is 0, redirect to " + location
-			config.mutex.Unlock()
-			LOG_ERROR(err_msg)
-			time.Sleep(1000 * time.Millisecond)
-			w.Header().Set("Location", location)
-			w.WriteHeader(302)
-			return
-		}
-		config.mutex.Unlock()
-
-		is_need_to_restore_session := false
-		dec_session_count(config, &is_need_to_restore_session)
-		time_out := config.time_out
-		if strings.Contains(rawUrl, "live_mode=ts") || strings.Contains(rawUrl, "live_mode=flv") {
-			time_out = -1
-		}
-
-		real_url := rawUrl
-		for _key, _value := range config.url_replace {
-			real_url = strings.Replace(real_url, _key, _value, 1)
-		}
-		resp, err := HttpGet(real_url, config, time_out)
-		defer func() {
-			if err == nil {
-				resp.Body.Close()
-			}
-			inc_session_count(config, &is_need_to_restore_session)
-		}()
-		if err != nil {
-			LOG_ERROR(fmt.Sprint(err))
-			if config.error_code_to_302 {
-				location := "/" + req.RequestURI[1:]
-				LOG_ERROR("get " + location + " error, redirect to get it")
-				w.Header().Set("Location", location)
-				w.WriteHeader(302)
-
-			} else {
-				w.WriteHeader(500)
-				w.Write([]byte("error"))
-			}
-			return
-		}
-
-		if resp.StatusCode == 301 || resp.StatusCode == 302 {
-			location := resp.Header.Get("Location")
-			w.Header().Set("Location", location)
-		} else if (resp.StatusCode < 200 || resp.StatusCode > 299) && config.error_code_to_302 {
-			m3u8_body, _ := io.ReadAll(resp.Body)
-			LOG_ERROR(fmt.Sprintf("http_code:%d,status:%s,body:%s", resp.StatusCode, resp.Status, string(m3u8_body)))
+		inc_session_count(config, &is_need_to_restore_session)
+	}()
+	if err != nil {
+		LOG_ERROR(fmt.Sprint(err))
+		if config.error_code_to_302 {
 			location := "/" + req.RequestURI[1:]
 			LOG_ERROR("get " + location + " error, redirect to get it")
 			w.Header().Set("Location", location)
 			w.WriteHeader(302)
-			return
-		}
 
-		w.WriteHeader(resp.StatusCode)
-
-		contentType := resp.Header.Get("Content-Type")
-		if strings.Contains(contentType, "mpegurl") {
-			m3u8_body, _ := io.ReadAll(resp.Body)
-			LOG_DEBUG(string(m3u8_body))
-			inc_session_count(config, &is_need_to_restore_session)
-			line := bufio.NewScanner(strings.NewReader(string(m3u8_body)))
-			lastRequestUrl := resp.Request.URL
-			for line.Scan() {
-				ext_info := line.Text()
-				if strings.Contains(ext_info, ".ts") {
-					if strings.Index(ext_info, "/") == 0 {
-						ext_info = lastRequestUrl.Scheme + "://" + lastRequestUrl.Host + ext_info
-					} else if strings.Index(ext_info, "http://") != 0 && strings.Index(ext_info, "https://") != 0 && lastRequestUrl.String() != rawUrl {
-						lastRequstRawUrl := lastRequestUrl.String()
-						ext_info = lastRequstRawUrl[0:strings.LastIndex(lastRequstRawUrl, "/")] + "/" + ext_info
-					}
-
-					if config.m3u8_proxy {
-						ext_info = strings.ReplaceAll(ext_info, "http://", "/http:/")
-						ext_info = strings.ReplaceAll(ext_info, "https://", "/https:/")
-					}
-				}
-				io.Copy(w, strings.NewReader(ext_info+"\n"))
-			}
 		} else {
-			io.Copy(w, resp.Body)
+			w.WriteHeader(500)
+			w.Write([]byte("error"))
 		}
-
-		if strings.Contains(rawUrl, "live_mode=ts") || strings.Contains(rawUrl, "live_mode=flv") {
-			panic("the stream must not be close")
-		}
+		return
 	}
-	LOG_INFO("[E]" + req.RequestURI)
+
+	if resp.StatusCode == 301 || resp.StatusCode == 302 {
+		location := resp.Header.Get("Location")
+		w.Header().Set("Location", location)
+	} else if (resp.StatusCode < 200 || resp.StatusCode > 299) && config.error_code_to_302 {
+		m3u8_body, _ := io.ReadAll(resp.Body)
+		LOG_ERROR(fmt.Sprintf("http_code:%d,status:%s,body:%s", resp.StatusCode, resp.Status, string(m3u8_body)))
+		location := "/" + req.RequestURI[1:]
+		LOG_ERROR("get " + location + " error, redirect to get it")
+		w.Header().Set("Location", location)
+		w.WriteHeader(302)
+		return
+	}
+
+	w.WriteHeader(resp.StatusCode)
+
+	contentType := resp.Header.Get("Content-Type")
+	http_resposne_copy(config, contentType, &is_need_to_restore_session, &w, resp, request_uri, &rawUrl)
+	if strings.Contains(rawUrl, "live_mode=ts") || strings.Contains(rawUrl, "live_mode=flv") {
+		panic("the stream must not be close")
+	}
 }
 
 func main() {
@@ -290,6 +404,7 @@ func main() {
 			default_config.error_code_to_302 = *http_error_code_to_302
 			default_config.time_out = *http_time_out
 			default_config.max_session = -1
+			default_config.debug_response = true
 			default_config.keep_alive = *http_keep_alive
 			http_configs["*"] = &default_config
 
@@ -303,7 +418,17 @@ func main() {
 				http_config.max_session = default_config.max_session
 				http_config.headers = make(map[string]string)
 				http_config.url_replace = make(map[string]string)
+				http_config.request_validator = make(map[string]string)
+				http_config.response_body_replace = make(map[string]string)
+				http_config.debug_response = default_config.debug_response
+
 				for k, v := range data.(map[string]interface{}) {
+					if k == "request_validator" {
+						for _key, _value := range v.(map[string]interface{}) {
+							http_config.request_validator[_key] = _value.(string)
+						}
+					}
+
 					if k == "headers" {
 						for header_key, header_value := range v.(map[string]interface{}) {
 							http_config.headers[header_key] = header_value.(string)
@@ -314,9 +439,28 @@ func main() {
 							http_config.url_replace[_key] = _value.(string)
 						}
 					}
+					if k == "response_body_replace" {
+						for _key, _value := range v.(map[string]interface{}) {
+							http_config.response_body_replace[_key] = _value.(string)
+						}
+					}
+
+					if k == "resposne_body_cache_time" {
+						cache_time := int(v.(float64))
+						if cache_time > 0 {
+							http_config.response_cache = new(HttpResponseCache)
+							http_config.response_cache.expried_time = cache_time
+						}
+					}
+
 					if k == "url" {
 						http_config.url = v.(string)
 					}
+
+					if k == "debug_response" {
+						http_config.debug_response = v.(bool)
+					}
+
 					if k == "follow_redirect" {
 						http_config.follow_redirect = v.(bool)
 					}
