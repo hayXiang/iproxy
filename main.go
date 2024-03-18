@@ -190,12 +190,9 @@ func http_resposne_copy(config *HttpConfig, content_type string, is_need_to_rest
 		if config.debug_response {
 			LOG_DEBUG(m3u8_body)
 		}
-		for _key, _value := range config.response_body_replace {
-			re := regexp.MustCompile(_key)
-			m3u8_body = re.ReplaceAllString(m3u8_body, _value)
-		}
 		line := bufio.NewScanner(strings.NewReader(m3u8_body))
 		lastRequestUrl, _ := url.Parse(str_last_request_url)
+		final_m3u8_body := ""
 		for line.Scan() {
 			ext_info := line.Text()
 			if strings.Contains(ext_info, ".ts") {
@@ -211,14 +208,20 @@ func http_resposne_copy(config *HttpConfig, content_type string, is_need_to_rest
 					ext_info = strings.ReplaceAll(ext_info, "https://", "/https:/")
 				}
 			}
-			io.Copy(*w, strings.NewReader(ext_info+"\n"))
+			final_m3u8_body += (ext_info + "\n")
 		}
+		for _key, _value := range config.response_body_replace {
+			re := regexp.MustCompile(_key)
+			_value = strings.ReplaceAll(_value, "{raw_url_query[*]}", request_uri.RawQuery)
+			final_m3u8_body = re.ReplaceAllString(final_m3u8_body, _value)
+		}
+		io.Copy(*w, strings.NewReader(final_m3u8_body))
 	} else {
-		if config.response_cache == nil {
+		if config.response_cache == nil && len(config.response_body_replace) == 0 {
 			io.Copy(*w, resp.Body)
 		} else {
 			m3u8_body := ""
-			if config.response_cache.body != nil {
+			if config.response_cache != nil && config.response_cache.body != nil {
 				m3u8_body = string(config.response_cache.body)
 			} else {
 				bytes_m3u8_body, _ := io.ReadAll(resp.Body)
@@ -328,7 +331,7 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 		real_url = re.ReplaceAllString(real_url, _value)
 	}
 
-	if !strings.Contains(real_url, ("http://")) && !strings.Contains(req.RequestURI, ("https://")) {
+	if !strings.Contains(real_url, ("http://")) && !strings.Contains(real_url, ("https://")) {
 		err_msg := "invalid url:" + req.RequestURI[1:]
 		w.WriteHeader(500)
 		w.Write([]byte(err_msg))
@@ -391,23 +394,24 @@ func main() {
 
 	flag.Parse()
 
+	var default_config HttpConfig
+	default_config.follow_redirect = true
+	default_config.m3u8_proxy = *is_m3u8_proxy
+	default_config.error_code_to_302 = *http_error_code_to_302
+	default_config.time_out = *http_time_out
+	default_config.max_session = -1
+	default_config.debug_response = true
+	default_config.keep_alive = *http_keep_alive
+	http_configs["*"] = &default_config
+
 	data, err := ioutil.ReadFile(*http_config_file)
 	if err == nil {
 		str_http_config := string(data)
 		if str_http_config != "" {
 			var config interface{}
 			json.Unmarshal([]byte(str_http_config), &config)
-			datas := config.([]interface{})
-			var default_config HttpConfig
-			default_config.follow_redirect = true
-			default_config.m3u8_proxy = *is_m3u8_proxy
-			default_config.error_code_to_302 = *http_error_code_to_302
-			default_config.time_out = *http_time_out
-			default_config.max_session = -1
-			default_config.debug_response = true
-			default_config.keep_alive = *http_keep_alive
-			http_configs["*"] = &default_config
 
+			datas := config.([]interface{})
 			for _, data := range datas {
 				var http_config HttpConfig
 				http_config.follow_redirect = default_config.follow_redirect
