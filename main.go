@@ -110,8 +110,8 @@ type HttpConfig struct {
 	request_validator     map[string]string
 	headers               map[string]string
 	url                   string
-	url_replace           map[string]string
-	response_body_replace map[string]string
+	url_replace           OrderMap
+	response_body_replace OrderMap
 	response_cache        *HttpResponseCache
 	debug_response        bool
 	follow_redirect       bool
@@ -121,6 +121,11 @@ type HttpConfig struct {
 	max_session           int
 	keep_alive            bool
 	mutex                 sync.Mutex
+}
+
+type OrderMap struct {
+	order_keys []string
+	order_map  map[string]string
 }
 
 var http_configs = make(map[string]*HttpConfig)
@@ -210,8 +215,9 @@ func http_resposne_copy(config *HttpConfig, content_type string, is_need_to_rest
 			}
 			final_m3u8_body += (ext_info + "\n")
 		}
-		for _key, _value := range config.response_body_replace {
+		for _, _key := range config.response_body_replace.order_keys {
 			re := regexp.MustCompile(_key)
+			_value := config.response_body_replace.order_map[_key]
 			_value = strings.ReplaceAll(_value, "{raw_url_query[*]}", request_uri.RawQuery)
 			_value = strings.ReplaceAll(_value, "{raw_url_query[type]}", request_uri.Query().Get("type"))
 			_value = strings.ReplaceAll(_value, "{raw_url_query[token]}", request_uri.Query().Get("token"))
@@ -219,7 +225,7 @@ func http_resposne_copy(config *HttpConfig, content_type string, is_need_to_rest
 		}
 		io.Copy(*w, strings.NewReader(final_m3u8_body))
 	} else {
-		if config.response_cache == nil && len(config.response_body_replace) == 0 {
+		if config.response_cache == nil && len(config.response_body_replace.order_keys) == 0 {
 			io.Copy(*w, resp.Body)
 		} else {
 			m3u8_body := ""
@@ -241,8 +247,9 @@ func http_resposne_copy(config *HttpConfig, content_type string, is_need_to_rest
 			if config.debug_response {
 				LOG_DEBUG(m3u8_body)
 			}
-			for _key, _value := range config.response_body_replace {
+			for _, _key := range config.response_body_replace.order_keys {
 				re := regexp.MustCompile(_key)
+				_value := config.response_body_replace.order_map[_key]
 				_value = strings.ReplaceAll(_value, "{raw_url_query[*]}", request_uri.RawQuery)
 				_value = strings.ReplaceAll(_value, "{raw_url_query[type]}", request_uri.Query().Get("type"))
 				_value = strings.ReplaceAll(_value, "{raw_url_query[token]}", request_uri.Query().Get("token"))
@@ -330,8 +337,9 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 	}
 
 	real_url := rawUrl
-	for _key, _value := range config.url_replace {
+	for _, _key := range config.url_replace.order_keys {
 		re := regexp.MustCompile(_key)
+		_value := config.url_replace.order_map[_key]
 		_value = strings.ReplaceAll(_value, "{raw_url_query[*]}", request_uri.RawQuery)
 		_value = strings.ReplaceAll(_value, "{raw_url_query[type]}", request_uri.Query().Get("type"))
 		_value = strings.ReplaceAll(_value, "{raw_url_query[token]}", request_uri.Query().Get("token"))
@@ -437,9 +445,9 @@ func main() {
 				http_config.keep_alive = default_config.keep_alive
 				http_config.max_session = default_config.max_session
 				http_config.headers = make(map[string]string)
-				http_config.url_replace = make(map[string]string)
+				http_config.url_replace.order_map = make(map[string]string)
 				http_config.request_validator = make(map[string]string)
-				http_config.response_body_replace = make(map[string]string)
+				http_config.response_body_replace.order_map = make(map[string]string)
 				http_config.debug_response = default_config.debug_response
 
 				for k, v := range data.(map[string]interface{}) {
@@ -455,13 +463,19 @@ func main() {
 						}
 					}
 					if k == "url_replace" {
-						for _key, _value := range v.(map[string]interface{}) {
-							http_config.url_replace[_key] = _value.(string)
+						for _, _maps := range v.([]interface{}) {
+							for _key, _value := range _maps.(map[string]interface{}) {
+								http_config.url_replace.order_keys = append(http_config.url_replace.order_keys, _key)
+								http_config.url_replace.order_map[_key] = _value.(string)
+							}
 						}
 					}
 					if k == "response_body_replace" {
-						for _key, _value := range v.(map[string]interface{}) {
-							http_config.response_body_replace[_key] = _value.(string)
+						for _, _maps := range v.([]interface{}) {
+							for _key, _value := range _maps.(map[string]interface{}) {
+								http_config.response_body_replace.order_keys = append(http_config.response_body_replace.order_keys, _key)
+								http_config.response_body_replace.order_map[_key] = _value.(string)
+							}
 						}
 					}
 
