@@ -250,7 +250,7 @@ func http_resposne_copy(config *HttpConfig, content_type string, is_need_to_rest
 }
 
 func proxy(w http.ResponseWriter, req *http.Request) {
-	LOG_INFO("[S]" + req.RequestURI)
+	LOG_INFO("[S] " + GetClientIP(req) + "," + req.RequestURI)
 	defer LOG_INFO("[E]" + req.RequestURI)
 	request_uri, _ := url.Parse(req.RequestURI)
 
@@ -382,6 +382,15 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 	if strings.Contains(rawUrl, "live_mode=ts") || strings.Contains(rawUrl, "live_mode=flv") {
 		panic("the stream must not be close")
 	}
+}
+
+func GetClientIP(r *http.Request) string {
+	xForwardedFor := r.Header.Get("X-Forwarded-For")
+	x_ip := strings.TrimSpace(strings.Split(xForwardedFor, ",")[0])
+	if x_ip == "" {
+		x_ip = r.Header.Get("X-Real-IP")
+	}
+	return "r-ip:" + r.RemoteAddr + ",x-ip:" + strings.Split(r.RemoteAddr, ":")[0]
 }
 
 func main() {
