@@ -213,6 +213,7 @@ func http_resposne_copy(config *HttpConfig, content_type string, is_need_to_rest
 		for _key, _value := range config.response_body_replace {
 			re := regexp.MustCompile(_key)
 			_value = strings.ReplaceAll(_value, "{raw_url_query[*]}", request_uri.RawQuery)
+			_value = strings.ReplaceAll(_value, "{raw_url_query[type]}", request_uri.Query().Get("type"))
 			final_m3u8_body = re.ReplaceAllString(final_m3u8_body, _value)
 		}
 		io.Copy(*w, strings.NewReader(final_m3u8_body))
@@ -242,6 +243,7 @@ func http_resposne_copy(config *HttpConfig, content_type string, is_need_to_rest
 			for _key, _value := range config.response_body_replace {
 				re := regexp.MustCompile(_key)
 				_value = strings.ReplaceAll(_value, "{raw_url_query[*]}", request_uri.RawQuery)
+				_value = strings.ReplaceAll(_value, "{raw_url_query[type]}", request_uri.Query().Get("type"))
 				m3u8_body = re.ReplaceAllString(m3u8_body, _value)
 			}
 			io.Copy(*w, strings.NewReader(m3u8_body))
@@ -328,6 +330,8 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 	real_url := rawUrl
 	for _key, _value := range config.url_replace {
 		re := regexp.MustCompile(_key)
+		_value = strings.ReplaceAll(_value, "{raw_url_query[*]}", request_uri.RawQuery)
+		_value = strings.ReplaceAll(_value, "{raw_url_query[type]}", request_uri.Query().Get("type"))
 		real_url = re.ReplaceAllString(real_url, _value)
 	}
 
