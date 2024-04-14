@@ -55,12 +55,12 @@ var transport_disable_keep_alive = http.Transport{
 
 type HttpRequestCallback func(*http.Request, *http.Client)
 
-func HttpGet(url string, config *HttpConfig, time_out int) (*http.Response, error) {
-	LOG_INFO("begin to HttpGet " + url)
+func HttpGet(src string, config *HttpConfig, time_out int) (*http.Response, error) {
+	LOG_INFO("begin to HttpGet " + src)
 	defer func() {
-		LOG_INFO("end to HttpGet " + url)
+		LOG_INFO("end to HttpGet " + src)
 	}()
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, src, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +200,7 @@ func http_resposne_copy(config *HttpConfig, content_type string, is_need_to_rest
 		final_m3u8_body := ""
 		for line.Scan() {
 			ext_info := line.Text()
-			if strings.Contains(ext_info, ".ts") {
+			if strings.Contains(ext_info, ".ts") || strings.Contains(ext_info, ".m3u8") {
 				if strings.Index(ext_info, "/") == 0 {
 					ext_info = lastRequestUrl.Scheme + "://" + lastRequestUrl.Host + ext_info
 				} else if strings.Index(ext_info, "http://") != 0 && strings.Index(ext_info, "https://") != 0 && lastRequestUrl.String() != *rawUrl {
