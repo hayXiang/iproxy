@@ -55,7 +55,7 @@ var transport_disable_keep_alive = http.Transport{
 
 type HttpRequestCallback func(*http.Request, *http.Client)
 
-func HttpGet(src string, config *HttpConfig, time_out int) (*http.Response, error) {
+func HttpGet(src string, headers *map[string]string, keep_alive bool, time_out int, follow_redirect bool) (*http.Response, error) {
 	LOG_INFO("begin to HttpGet " + src)
 	defer func() {
 		LOG_INFO("end to HttpGet " + src)
@@ -64,23 +64,26 @@ func HttpGet(src string, config *HttpConfig, time_out int) (*http.Response, erro
 	if err != nil {
 		return nil, err
 	}
-	if len(config.headers) == 0 {
+	if len(*headers) == 0 {
 		req.Header.Add("User-Agent", "Dalvik/2.1.0 (Linux; U; Android 9; PCRT00 Build/PQ3A.190605.01111538)")
 	} else {
-		for key, value := range config.headers {
+		for key, value := range *headers {
 			req.Header.Add(key, value)
 		}
 	}
 
 	client := http.Client{}
 
-	if config.keep_alive {
+	if keep_alive {
 		client.Transport = &transport
 	} else {
 		client.Transport = &transport_disable_keep_alive
 	}
 
-	if !config.follow_redirect {
+	//proxy_url, _ := url.Parse("http://127.0.0.1:10809")
+	//transport.Proxy = http.ProxyURL(proxy_url)
+
+	if !follow_redirect {
 		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		}
@@ -171,8 +174,28 @@ func inc_session_count(config *HttpConfig, is_need_to_restore_session *bool) {
 	}
 }
 
+func replace_ext_info(ext_info string, lastRequestUrl *url.URL, config *HttpConfig, rawUrl *string) string {
+	if strings.Index(ext_info, "/") == 0 {
+		ext_info = lastRequestUrl.Scheme + "://" + lastRequestUrl.Host + ext_info
+	} else if strings.Index(ext_info, "http://") != 0 && strings.Index(ext_info, "https://") != 0 && lastRequestUrl.String() != *rawUrl {
+		lastRequstRawUrlWithoutQuery := lastRequestUrl.Scheme + "://" + lastRequestUrl.Host + lastRequestUrl.RawPath
+		ext_info = lastRequstRawUrlWithoutQuery[0:strings.LastIndex(lastRequstRawUrlWithoutQuery, "/")] + "/" + ext_info
+	}
+
+	if config.m3u8_proxy {
+		if strings.Index(ext_info, "http://") == 0 {
+			ext_info = strings.Replace(ext_info, "http://", "/http:/", 1)
+		}
+
+		if strings.Index(ext_info, "https://") == 0 {
+			ext_info = strings.Replace(ext_info, "https://", "/https:/", 1)
+		}
+	}
+	return ext_info
+}
+
 func http_resposne_copy(config *HttpConfig, content_type string, is_need_to_restore_session *bool, w *http.ResponseWriter, resp *http.Response, request_uri *url.URL, rawUrl *string) {
-	if strings.Contains(content_type, "mpegurl") {
+	if strings.Contains(strings.ToLower(content_type), "mpegurl") {
 		m3u8_body := ""
 		str_last_request_url := ""
 		if config.response_cache != nil && config.response_cache.body != nil {
@@ -200,18 +223,19 @@ func http_resposne_copy(config *HttpConfig, content_type string, is_need_to_rest
 		final_m3u8_body := ""
 		for line.Scan() {
 			ext_info := line.Text()
-			if strings.Contains(ext_info, ".ts") || strings.Contains(ext_info, ".m3u8") {
-				if strings.Index(ext_info, "/") == 0 {
-					ext_info = lastRequestUrl.Scheme + "://" + lastRequestUrl.Host + ext_info
-				} else if strings.Index(ext_info, "http://") != 0 && strings.Index(ext_info, "https://") != 0 && lastRequestUrl.String() != *rawUrl {
-					lastRequstRawUrl := lastRequestUrl.String()
-					ext_info = lastRequstRawUrl[0:strings.LastIndex(lastRequstRawUrl, "/")] + "/" + ext_info
+			if strings.Index(ext_info, "#EXT") == 0 && strings.Contains(ext_info, "URI=") && strings.Contains(ext_info, ".m3u8") {
+				for _, info := range strings.Split(ext_info, ",") {
+					key_value := strings.Split(info, "=")
+					if key_value[0] == "URI" {
+						ext_url := strings.ReplaceAll(key_value[1], "\"", "")
+						ext_url = replace_ext_info(ext_url, lastRequestUrl, config, rawUrl)
+						re := regexp.MustCompile("URI=\".*m3u8\"")
+						ext_info = re.ReplaceAllString(ext_info, "URI=\""+ext_url+"\"")
+						break
+					}
 				}
-
-				if config.m3u8_proxy {
-					ext_info = strings.ReplaceAll(ext_info, "http://", "/http:/")
-					ext_info = strings.ReplaceAll(ext_info, "https://", "/https:/")
-				}
+			} else if strings.Contains(ext_info, ".ts") || strings.Contains(ext_info, ".m3u8") {
+				ext_info = replace_ext_info(ext_info, lastRequestUrl, config, rawUrl)
 			}
 			final_m3u8_body += (ext_info + "\n")
 		}
@@ -266,14 +290,21 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 	request_uri, _ := url.Parse(req.RequestURI)
 
 	rawUrl := req.RequestURI[1:]
-	rawUrl = strings.Replace(rawUrl, "http:/", "http://", 1)
-	rawUrl = strings.Replace(rawUrl, "https:/", "https://", 1)
+
+	if strings.Index(rawUrl, "http:/") == 0 {
+		rawUrl = strings.Replace(rawUrl, "http:/", "http://", 1)
+	}
+
+	if strings.Index(rawUrl, "https:/") == 0 {
+		rawUrl = strings.Replace(rawUrl, "https:/", "https://", 1)
+	}
 
 	config := get_http_config(rawUrl)
+	follow_redirect := config.follow_redirect
 	if strings.Contains(rawUrl, "follow_redirect=false") {
-		rawUrl = strings.Replace(rawUrl, "?follow_redirect", "", 1)
-		rawUrl = strings.Replace(rawUrl, "&follow_redirect", "", 1)
-		config.follow_redirect = false
+		rawUrl = strings.Replace(rawUrl, "?follow_redirect=false", "", 1)
+		rawUrl = strings.Replace(rawUrl, "&follow_redirect=false", "", 1)
+		follow_redirect = false
 	}
 
 	for _key, _value := range config.request_validator {
@@ -355,7 +386,7 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	resp, err := HttpGet(real_url, config, time_out)
+	resp, err := HttpGet(real_url, &config.headers, config.keep_alive, time_out, follow_redirect)
 	defer func() {
 		if err == nil {
 			resp.Body.Close()
