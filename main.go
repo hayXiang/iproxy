@@ -55,7 +55,7 @@ var transport_disable_keep_alive = http.Transport{
 
 type HttpRequestCallback func(*http.Request, *http.Client)
 
-func HttpGet(src string, headers *map[string]string, keep_alive bool, time_out int, follow_redirect bool) (*http.Response, error) {
+func HttpGet(src string, headers *map[string]string, keep_alive bool, time_out int, follow_redirect bool, proxy_address string) (*http.Response, error) {
 	LOG_INFO("begin to HttpGet " + src)
 	defer func() {
 		LOG_INFO("end to HttpGet " + src)
@@ -76,12 +76,17 @@ func HttpGet(src string, headers *map[string]string, keep_alive bool, time_out i
 
 	if keep_alive {
 		client.Transport = &transport
+		if proxy_address != "" {
+			proxy_url, _ := url.Parse(proxy_address)
+			transport.Proxy = http.ProxyURL(proxy_url)
+		}
 	} else {
 		client.Transport = &transport_disable_keep_alive
+		if proxy_address != "" {
+			proxy_url, _ := url.Parse(proxy_address)
+			transport_disable_keep_alive.Proxy = http.ProxyURL(proxy_url)
+		}
 	}
-
-	//proxy_url, _ := url.Parse("http://127.0.0.1:10809")
-	//transport.Proxy = http.ProxyURL(proxy_url)
 
 	if !follow_redirect {
 		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
@@ -123,6 +128,7 @@ type HttpConfig struct {
 	time_out              int
 	max_session           int
 	keep_alive            bool
+	http_proxy            string
 	mutex                 sync.Mutex
 }
 
@@ -386,7 +392,7 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	resp, err := HttpGet(real_url, &config.headers, config.keep_alive, time_out, follow_redirect)
+	resp, err := HttpGet(real_url, &config.headers, config.keep_alive, time_out, follow_redirect, config.http_proxy)
 	defer func() {
 		if err == nil {
 			resp.Body.Close()
@@ -424,7 +430,7 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 
 	contentType := resp.Header.Get("Content-Type")
-	http_resposne_copy(config, contentType, &is_need_to_restore_session, &w, resp, request_uri, &rawUrl)
+	http_resposne_copy(config, contentType, &is_need_to_restore_session, &w, resp, request_uri, &real_url)
 	if strings.Contains(rawUrl, "live_mode=ts") || strings.Contains(rawUrl, "live_mode=flv") {
 		panic("the stream must not be close")
 	}
@@ -436,7 +442,7 @@ func GetClientIP(r *http.Request) string {
 	if x_ip == "" {
 		x_ip = r.Header.Get("X-Real-IP")
 	}
-	return "r-ip:" + r.RemoteAddr + ",x-ip:" + strings.Split(r.RemoteAddr, ":")[0]
+	return "r-ip:" + r.RemoteAddr + ",x-ip:" + x_ip
 }
 
 func main() {
@@ -456,6 +462,7 @@ func main() {
 	default_config.time_out = *http_time_out
 	default_config.max_session = -1
 	default_config.debug_response = true
+	default_config.http_proxy = ""
 	default_config.keep_alive = *http_keep_alive
 	http_configs["*"] = &default_config
 
@@ -522,6 +529,10 @@ func main() {
 						http_config.url = v.(string)
 					}
 
+					if k == "http_proxy" {
+						http_config.http_proxy = v.(string)
+					}
+
 					if k == "debug_response" {
 						http_config.debug_response = v.(bool)
 					}
@@ -549,6 +560,7 @@ func main() {
 					if k == "keep_alive" {
 						http_config.keep_alive = v.(bool)
 					}
+
 				}
 				http_configs[http_path(http_config.url)] = &http_config
 			}
