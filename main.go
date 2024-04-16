@@ -98,6 +98,7 @@ func HttpGet(src string, headers *map[string]string, keep_alive bool, time_out i
 		client.Timeout = time.Second * time.Duration(time_out)
 	}
 	res, err := client.Do(req)
+	LOG_INFO(fmt.Sprintf("HttpGet %s, status = %s, code = %d", src, res.Status, res.StatusCode))
 	if err != nil {
 		return res, err
 	}
