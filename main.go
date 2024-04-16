@@ -426,10 +426,9 @@ func proxy(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(302)
 		return
 	}
-
-	w.WriteHeader(resp.StatusCode)
-
 	contentType := resp.Header.Get("Content-Type")
+	w.Header().Set("Content-Type", contentType)
+	w.WriteHeader(resp.StatusCode)
 	http_resposne_copy(config, contentType, &is_need_to_restore_session, &w, resp, request_uri, &real_url)
 	if strings.Contains(rawUrl, "live_mode=ts") || strings.Contains(rawUrl, "live_mode=flv") {
 		panic("the stream must not be close")
