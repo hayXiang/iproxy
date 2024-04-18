@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"encoding/json"
 	"flag"
@@ -201,11 +202,15 @@ func replace_ext_info(ext_info string, lastRequestUrl *url.URL, config *HttpConf
 	return ext_info
 }
 
+func has_cache(config *HttpConfig) bool {
+	return config.response_cache != nil && config.response_cache.body != nil
+}
+
 func http_resposne_copy(config *HttpConfig, content_type string, is_need_to_restore_session *bool, w *http.ResponseWriter, resp *http.Response, request_uri *url.URL, rawUrl *string) {
 	if strings.Contains(strings.ToLower(content_type), "mpegurl") {
 		m3u8_body := ""
 		str_last_request_url := ""
-		if config.response_cache != nil && config.response_cache.body != nil {
+		if has_cache(config) {
 			m3u8_body = string(config.response_cache.body)
 			str_last_request_url = config.response_cache.last_url
 		} else {
@@ -256,37 +261,10 @@ func http_resposne_copy(config *HttpConfig, content_type string, is_need_to_rest
 		}
 		io.Copy(*w, strings.NewReader(final_m3u8_body))
 	} else {
-		if config.response_cache == nil && len(config.response_body_replace.order_keys) == 0 {
-			io.Copy(*w, resp.Body)
+		if has_cache(config) {
+			io.Copy(*w, bytes.NewBuffer(config.response_cache.body))
 		} else {
-			m3u8_body := ""
-			if config.response_cache != nil && config.response_cache.body != nil {
-				m3u8_body = string(config.response_cache.body)
-			} else {
-				bytes_m3u8_body, _ := io.ReadAll(resp.Body)
-				inc_session_count(config, is_need_to_restore_session)
-				if config.response_cache != nil && config.response_cache.expried_time != 0 {
-					config.response_cache.content_type = content_type
-					config.response_cache.mutex.Lock()
-					config.response_cache.create_time = time.Now()
-					config.response_cache.body = bytes_m3u8_body
-					config.response_cache.last_url = *rawUrl
-					config.response_cache.mutex.Unlock()
-				}
-				m3u8_body = string(bytes_m3u8_body)
-			}
-			if config.debug_response {
-				LOG_DEBUG(m3u8_body)
-			}
-			for _, _key := range config.response_body_replace.order_keys {
-				re := regexp.MustCompile(_key)
-				_value := config.response_body_replace.order_map[_key]
-				_value = strings.ReplaceAll(_value, "{raw_url_query[*]}", request_uri.RawQuery)
-				_value = strings.ReplaceAll(_value, "{raw_url_query[type]}", request_uri.Query().Get("type"))
-				_value = strings.ReplaceAll(_value, "{raw_url_query[token]}", request_uri.Query().Get("token"))
-				m3u8_body = re.ReplaceAllString(m3u8_body, _value)
-			}
-			io.Copy(*w, strings.NewReader(m3u8_body))
+			io.Copy(*w, resp.Body)
 		}
 	}
 }
